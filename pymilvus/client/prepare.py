@@ -4,18 +4,18 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Union
 
 import numpy as np
 
-from pymilvus.client import __version__, entity_helper
 from pymilvus.exceptions import DataNotMatchException, ExceptionsMessage, ParamError
 from pymilvus.grpc_gen import common_pb2 as common_types
 from pymilvus.grpc_gen import milvus_pb2 as milvus_types
 from pymilvus.grpc_gen import schema_pb2 as schema_types
 from pymilvus.orm.schema import CollectionSchema
 
-from . import blob, ts_utils, utils
+from . import __version__, blob, entity_helper, ts_utils, utils
 from .check import check_pass_param, is_legal_collection_properties
 from .constants import (
     DEFAULT_CONSISTENCY_LEVEL,
     GROUP_BY_FIELD,
+    GROUP_SIZE,
     ITERATOR_FIELD,
     REDUCE_STOP_FOR_BEST,
 )
@@ -381,7 +381,9 @@ class Prepare:
                     raise TypeError(msg)
                 for k, v in entity.items():
                     if k not in fields_data and not enable_dynamic:
-                        raise DataNotMatchException(message=ExceptionsMessage.InsertUnexpectedField)
+                        raise DataNotMatchException(
+                            message=ExceptionsMessage.InsertUnexpectedField % k
+                        )
 
                     if k in fields_data:
                         field_info, field_data = field_info_map[k], fields_data[k]
@@ -626,7 +628,7 @@ class Prepare:
     def search_requests_with_expr(
         cls,
         collection_name: str,
-        data: Union[List, entity_helper.SparseMatrixInputType],
+        data: Union[List, utils.SparseMatrixInputType],
         anns_field: str,
         param: Dict,
         limit: int,
@@ -667,6 +669,10 @@ class Prepare:
         group_by_field = kwargs.get(GROUP_BY_FIELD)
         if group_by_field is not None:
             search_params[GROUP_BY_FIELD] = group_by_field
+
+        group_size = kwargs.get(GROUP_SIZE)
+        if group_size is not None:
+            search_params[GROUP_SIZE] = group_size
 
         if param.get("metric_type") is not None:
             search_params["metric_type"] = param["metric_type"]
@@ -961,12 +967,13 @@ class Prepare:
         )
 
     @classmethod
-    def manual_compaction(cls, collection_id: int):
+    def manual_compaction(cls, collection_id: int, is_major: bool):
         if collection_id is None or not isinstance(collection_id, int):
             raise ParamError(message=f"collection_id value {collection_id} is illegal")
 
         request = milvus_types.ManualCompactionRequest()
         request.collectionID = collection_id
+        request.majorCompaction = is_major
 
         return request
 
@@ -1238,3 +1245,14 @@ class Prepare:
     @classmethod
     def list_database_req(cls):
         return milvus_types.ListDatabasesRequest()
+
+    @classmethod
+    def alter_database_req(cls, db_name: str, properties: Dict):
+        check_pass_param(db_name=db_name)
+        kvs = [common_types.KeyValuePair(key=k, value=str(v)) for k, v in properties.items()]
+        return milvus_types.AlterDatabaseRequest(db_name=db_name, properties=kvs)
+
+    @classmethod
+    def describe_database_req(cls, db_name: str):
+        check_pass_param(db_name=db_name)
+        return milvus_types.DescribeDatabaseRequest(db_name=db_name)

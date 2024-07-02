@@ -23,7 +23,7 @@ from pymilvus.grpc_gen import common_pb2, milvus_pb2_grpc
 from pymilvus.grpc_gen import milvus_pb2 as milvus_types
 from pymilvus.settings import Config
 
-from . import entity_helper, interceptor, ts_utils
+from . import entity_helper, interceptor, ts_utils, utils
 from .abstract import AnnSearchRequest, BaseRanker, CollectionSchema, MutationResult, SearchResult
 from .asynch import (
     CreateIndexFuture,
@@ -42,6 +42,7 @@ from .types import (
     BulkInsertState,
     CompactionPlans,
     CompactionState,
+    DatabaseInfo,
     DataType,
     ExtraList,
     GrantInfo,
@@ -763,7 +764,7 @@ class GrpcHandler:
     def search(
         self,
         collection_name: str,
-        data: Union[List[List[float]], entity_helper.SparseMatrixInputType],
+        data: Union[List[List[float]], utils.SparseMatrixInputType],
         anns_field: str,
         param: Dict,
         limit: int,
@@ -1050,6 +1051,10 @@ class GrpcHandler:
         check_status(status)
         if len(response.index_descriptions) == 1:
             info_dict = {kv.key: kv.value for kv in response.index_descriptions[0].params}
+            info_dict["total_rows"] = response.index_descriptions[0].total_rows
+            info_dict["indexed_rows"] = response.index_descriptions[0].indexed_rows
+            info_dict["pending_index_rows"] = response.index_descriptions[0].pending_index_rows
+            info_dict["state"] = response.index_descriptions[0].state
             info_dict["field_name"] = response.index_descriptions[0].field_name
             info_dict["index_name"] = response.index_descriptions[0].index_name
             if info_dict.get("params"):
@@ -1291,6 +1296,21 @@ class GrpcHandler:
         return list(response.db_names)
 
     @retry_on_rpc_failure()
+    def alter_database(
+        self, db_name: str, properties: dict, timeout: Optional[float] = None, **kwargs
+    ):
+        request = Prepare.alter_database_req(db_name, properties)
+        status = self._stub.AlterDatabase(request, timeout=timeout)
+        check_status(status)
+
+    @retry_on_rpc_failure()
+    def describe_database(self, db_name: str, timeout: Optional[float] = None):
+        request = Prepare.describe_database_req(db_name=db_name)
+        resp = self._stub.DescribeDatabase(request, timeout=timeout)
+        check_status(resp.status)
+        return DatabaseInfo(resp)
+
+    @retry_on_rpc_failure()
     def get_load_state(
         self,
         collection_name: str,
@@ -1525,13 +1545,19 @@ class GrpcHandler:
         check_status(status)
 
     @retry_on_rpc_failure()
-    def compact(self, collection_name: str, timeout: Optional[float] = None, **kwargs) -> int:
+    def compact(
+        self,
+        collection_name: str,
+        timeout: Optional[float] = None,
+        is_major: Optional[bool] = False,
+        **kwargs,
+    ) -> int:
         request = Prepare.describe_collection_request(collection_name)
         rf = self._stub.DescribeCollection.future(request, timeout=timeout)
         response = rf.result()
         check_status(response.status)
 
-        req = Prepare.manual_compaction(response.collectionID)
+        req = Prepare.manual_compaction(response.collectionID, is_major)
         future = self._stub.ManualCompaction.future(req, timeout=timeout)
         response = future.result()
         check_status(response.status)

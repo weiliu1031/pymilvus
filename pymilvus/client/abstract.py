@@ -7,7 +7,7 @@ from pymilvus.exceptions import DataTypeNotMatchException, ExceptionsMessage, Mi
 from pymilvus.grpc_gen import common_pb2, schema_pb2
 from pymilvus.settings import Config
 
-from . import entity_helper
+from . import entity_helper, utils
 from .constants import DEFAULT_CONSISTENCY_LEVEL, RANKER_TYPE_RRF, RANKER_TYPE_WEIGHTED
 from .types import DataType
 
@@ -337,7 +337,7 @@ class WeightedRanker(BaseRanker):
 class AnnSearchRequest:
     def __init__(
         self,
-        data: Union[List, entity_helper.SparseMatrixInputType],
+        data: Union[List, utils.SparseMatrixInputType],
         anns_field: str,
         param: Dict,
         limit: int,
@@ -514,7 +514,8 @@ class SearchResult(list):
 
     def __str__(self) -> str:
         """Only print at most 10 query results"""
-        return f"data: {list(map(str, self[:10]))} {'...' if len(self) > 10 else ''}, cost: {self.cost}"
+        reminder = f" ... and {len(self) - 10} results remaining" if len(self) > 10 else ""
+        return f"data: {list(map(str, self[:10]))}{reminder}, cost: {self.cost}"
 
     __repr__ = __str__
 
@@ -585,7 +586,8 @@ class Hits(list):
 
     def __str__(self) -> str:
         """Only print at most 10 query results"""
-        return str(list(map(str, self[:10])))
+        reminder = f" ... and {len(self) - 10} entities remaining" if len(self) > 10 else ""
+        return f"{list(map(str, self[:10]))!s}{reminder}"
 
     __repr__ = __str__
 

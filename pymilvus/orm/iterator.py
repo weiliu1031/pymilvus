@@ -2,7 +2,7 @@ import logging
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, TypeVar, Union
 
-from pymilvus.client import entity_helper
+from pymilvus.client import entity_helper, utils
 from pymilvus.client.abstract import Hits, LoopBase
 from pymilvus.exceptions import (
     MilvusException,
@@ -203,7 +203,7 @@ class QueryIterator:
             filtered_pk_str = f"{self._pk_field_name} > {self._next_id}"
         if current_expr is None or len(current_expr) == 0:
             return filtered_pk_str
-        return current_expr + " and " + filtered_pk_str
+        return "(" + current_expr + ")" + " and " + filtered_pk_str
 
     def __update_cursor(self, res: List) -> None:
         if len(res) == 0:
@@ -283,7 +283,7 @@ class SearchIterator:
         self,
         connection: Connections,
         collection_name: str,
-        data: Union[List, entity_helper.SparseMatrixInputType],
+        data: Union[List, utils.SparseMatrixInputType],
         ann_field: str,
         param: Dict,
         batch_size: Optional[int] = 1000,
@@ -455,9 +455,7 @@ class SearchIterator:
 
     def __is_cache_enough(self, count: int) -> bool:
         cached_page = iterator_cache.fetch_cache(self._cache_id)
-        if cached_page is None or len(cached_page) < count:
-            return False
-        return True
+        return cached_page is not None and len(cached_page) >= count
 
     def __extract_page_from_cache(self, count: int) -> SearchPage:
         cached_page = iterator_cache.fetch_cache(self._cache_id)
@@ -572,7 +570,7 @@ class SearchIterator:
         if len(filtered_ids_str) > 0:
             if expr is not None and len(expr) > 0:
                 filter_expr = f" and {self._pk_field_name} not in [{filtered_ids_str}]"
-                return expr + filter_expr
+                return "(" + expr + ")" + filter_expr
             return f"{self._pk_field_name} not in [{filtered_ids_str}]"
         return expr
 

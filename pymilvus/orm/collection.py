@@ -16,7 +16,7 @@ from typing import Dict, List, Optional, Union
 
 import pandas as pd
 
-from pymilvus.client import entity_helper
+from pymilvus.client import utils
 from pymilvus.client.abstract import BaseRanker, SearchResult
 from pymilvus.client.constants import DEFAULT_CONSISTENCY_LEVEL
 from pymilvus.client.types import (
@@ -234,10 +234,10 @@ class Collection:
         return self._schema
 
     @property
-    def aliases(self, **kwargs) -> list:
+    def aliases(self) -> list:
         """List[str]: all the aliases of the collection."""
         conn = self._get_connection()
-        resp = conn.describe_collection(self._name, **kwargs)
+        resp = conn.describe_collection(self._name)
         return resp["aliases"]
 
     @property
@@ -256,14 +256,14 @@ class Collection:
         return self.num_entities == 0
 
     @property
-    def num_shards(self, **kwargs) -> int:
+    def num_shards(self) -> int:
         """int: number of shards used by the collection."""
         if self._num_shards is None:
-            self._num_shards = self.describe(timeout=kwargs.get("timeout")).get("num_shards")
+            self._num_shards = self.describe().get("num_shards")
         return self._num_shards
 
     @property
-    def num_entities(self, **kwargs) -> int:
+    def num_entities(self) -> int:
         """int: The number of entities in the collection, not real time.
 
         Examples:
@@ -283,7 +283,7 @@ class Collection:
             2
         """
         conn = self._get_connection()
-        stats = conn.get_collection_stats(collection_name=self._name, **kwargs)
+        stats = conn.get_collection_stats(collection_name=self._name)
         result = {stat.key: stat.value for stat in stats}
         result["row_count"] = int(result["row_count"])
         return result["row_count"]
@@ -454,7 +454,7 @@ class Collection:
 
     def insert(
         self,
-        data: Union[List, pd.DataFrame, Dict, entity_helper.SparseMatrixInputType],
+        data: Union[List, pd.DataFrame, Dict, utils.SparseMatrixInputType],
         partition_name: Optional[str] = None,
         timeout: Optional[float] = None,
         **kwargs,
@@ -581,7 +581,7 @@ class Collection:
 
     def upsert(
         self,
-        data: Union[List, pd.DataFrame, Dict, entity_helper.SparseMatrixInputType],
+        data: Union[List, pd.DataFrame, Dict, utils.SparseMatrixInputType],
         partition_name: Optional[str] = None,
         timeout: Optional[float] = None,
         **kwargs,
@@ -655,7 +655,7 @@ class Collection:
 
     def search(
         self,
-        data: Union[List, entity_helper.SparseMatrixInputType],
+        data: Union[List, utils.SparseMatrixInputType],
         anns_field: str,
         param: Dict,
         limit: int,
@@ -790,7 +790,7 @@ class Collection:
         if expr is not None and not isinstance(expr, str):
             raise DataTypeNotMatchException(message=ExceptionsMessage.ExprType % type(expr))
 
-        empty_scipy_sparse = entity_helper.sparse_is_scipy_format(data) and (data.shape[0] == 0)
+        empty_scipy_sparse = utils.SciPyHelper.is_scipy_sparse(data) and (data.shape[0] == 0)
         if (isinstance(data, list) and len(data) == 0) or empty_scipy_sparse:
             resp = SearchResult(schema_pb2.SearchResultData())
             return SearchFuture(None) if kwargs.get("_async", False) else resp
@@ -957,7 +957,7 @@ class Collection:
 
     def search_iterator(
         self,
-        data: Union[List, entity_helper.SparseMatrixInputType],
+        data: Union[List, utils.SparseMatrixInputType],
         anns_field: str,
         param: Dict,
         batch_size: Optional[int] = 1000,
@@ -969,10 +969,6 @@ class Collection:
         round_decimal: int = -1,
         **kwargs,
     ):
-        if entity_helper.entity_is_sparse_matrix(data):
-            # search iterator is based on range_search, which is not yet supported for sparse.
-            raise DataTypeNotSupportException(message=ExceptionsMessage.DataTypeNotSupport)
-
         if expr is not None and not isinstance(expr, str):
             raise DataTypeNotMatchException(message=ExceptionsMessage.ExprType % type(expr))
         return SearchIterator(
@@ -1111,7 +1107,7 @@ class Collection:
         )
 
     @property
-    def partitions(self, **kwargs) -> List[Partition]:
+    def partitions(self) -> List[Partition]:
         """List[Partition]: List of Partition object.
 
         Raises:
@@ -1128,7 +1124,7 @@ class Collection:
             [{"name": "_default", "description": "", "num_entities": 0}]
         """
         conn = self._get_connection()
-        partition_strs = conn.list_partitions(self._name, **kwargs)
+        partition_strs = conn.list_partitions(self._name)
         partitions = []
         for partition in partition_strs:
             partitions.append(Partition(self, partition, construct_only=True))
@@ -1252,7 +1248,7 @@ class Collection:
         return conn.drop_partition(self._name, partition_name, timeout=timeout, **kwargs)
 
     @property
-    def indexes(self, **kwargs) -> List[Index]:
+    def indexes(self) -> List[Index]:
         """List[Index]: list of indexes of this collection.
 
         Examples:
@@ -1267,7 +1263,7 @@ class Collection:
         """
         conn = self._get_connection()
         indexes = []
-        tmp_index = conn.list_indexes(self._name, **kwargs)
+        tmp_index = conn.list_indexes(self._name)
         for index in tmp_index:
             if index is not None:
                 info_dict = {kv.key: kv.value for kv in index.params}
@@ -1442,9 +1438,10 @@ class Collection:
         conn = self._get_connection()
         copy_kwargs = copy.deepcopy(kwargs)
         index_name = copy_kwargs.pop("index_name", Config.IndexName)
-        if conn.describe_index(self._name, index_name, timeout=timeout, **copy_kwargs) is None:
-            return False
-        return True
+
+        return (
+            conn.describe_index(self._name, index_name, timeout=timeout, **copy_kwargs) is not None
+        )
 
     def drop_index(self, timeout: Optional[float] = None, **kwargs):
         """Drop index and its corresponding index files.
@@ -1480,16 +1477,15 @@ class Collection:
         conn = self._get_connection()
         tmp_index = conn.describe_index(self._name, index_name, timeout=timeout, **copy_kwargs)
         if tmp_index is not None:
-            index = Index(
-                collection=self,
+            conn.drop_index(
+                collection_name=self._name,
                 field_name=tmp_index["field_name"],
-                index_params=tmp_index,
-                construct_only=True,
                 index_name=index_name,
+                timeout=timeout,
+                **copy_kwargs,
             )
-            index.drop(timeout=timeout, **kwargs)
 
-    def compact(self, timeout: Optional[float] = None, **kwargs):
+    def compact(self, timeout: Optional[float] = None, is_major: Optional[bool] = False, **kwargs):
         """Compact merge the small segments in a collection
 
         Args:
@@ -1497,13 +1493,24 @@ class Collection:
                 for the RPC. When timeout is set to None, client waits until server response
                 or error occur.
 
+            is_major (``bool``, optional): An optional setting to trigger major compaction.
+
         Raises:
             MilvusException: If anything goes wrong.
         """
         conn = self._get_connection()
-        self.compaction_id = conn.compact(self._name, timeout=timeout, **kwargs)
+        if is_major:
+            self.major_compaction_id = conn.compact(
+                self._name, timeout=timeout, is_major=is_major, **kwargs
+            )
+        else:
+            self.compaction_id = conn.compact(
+                self._name, timeout=timeout, is_major=is_major, **kwargs
+            )
 
-    def get_compaction_state(self, timeout: Optional[float] = None, **kwargs) -> CompactionState:
+    def get_compaction_state(
+        self, timeout: Optional[float] = None, is_major: Optional[bool] = False, **kwargs
+    ) -> CompactionState:
         """Get the current compaction state
 
         Args:
@@ -1511,15 +1518,20 @@ class Collection:
                 for the RPC. When timeout is set to None, client waits until server response
                 or error occur.
 
+            is_major (``bool``, optional): An optional setting to get major compaction state.
+
         Raises:
             MilvusException: If anything goes wrong.
         """
         conn = self._get_connection()
+        if is_major:
+            return conn.get_compaction_state(self.major_compaction_id, timeout=timeout, **kwargs)
         return conn.get_compaction_state(self.compaction_id, timeout=timeout, **kwargs)
 
     def wait_for_compaction_completed(
         self,
         timeout: Optional[float] = None,
+        is_major: Optional[bool] = False,
         **kwargs,
     ) -> CompactionState:
         """Block until the current collection's compaction completed
@@ -1529,10 +1541,16 @@ class Collection:
                 for the RPC. When timeout is set to None, client waits until server response
                 or error occur.
 
+            is_major (``bool``, optional): An optional setting to get major compaction state.
+
         Raises:
             MilvusException: If anything goes wrong.
         """
         conn = self._get_connection()
+        if is_major:
+            return conn.wait_for_compaction_completed(
+                self.major_compaction_id, timeout=timeout, **kwargs
+            )
         return conn.wait_for_compaction_completed(self.compaction_id, timeout=timeout, **kwargs)
 
     def get_compaction_plans(self, timeout: Optional[float] = None, **kwargs) -> CompactionPlans:
