@@ -51,6 +51,7 @@ from .types import (
     IndexState,
     LoadState,
     Plan,
+    PrivilegeGroupInfo,
     Replica,
     ResourceGroupConfig,
     ResourceGroupInfo,
@@ -596,17 +597,15 @@ class GrpcHandler:
         check_pass_param(collection_name=collection_name, timeout=timeout)
         try:
             req = Prepare.delete_request(
-                collection_name,
-                partition_name,
-                expression,
-                consistency_level=kwargs.get("consistency_level", 0),
-                param_name=kwargs.pop("param_name", None),
+                collection_name=collection_name,
+                filter=expression,
+                partition_name=partition_name,
+                consistency_level=kwargs.pop("consistency_level", 0),
                 **kwargs,
             )
             future = self._stub.Delete.future(req, timeout=timeout)
-
             if kwargs.get("_async", False):
-                cb = kwargs.get("_callback")
+                cb = kwargs.pop("_callback", None)
                 f = MutationFuture(future, cb, timeout=timeout, **kwargs)
                 f.add_callback(ts_utils.update_ts_on_mutation(collection_name))
                 return f
@@ -1874,6 +1873,46 @@ class GrpcHandler:
         check_status(resp)
 
     @retry_on_rpc_failure()
+    def grant_privilege_v2(
+        self,
+        role_name: str,
+        privilege: str,
+        collection_name: str,
+        db_name: Optional[str] = None,
+        timeout: Optional[float] = None,
+        **kwargs,
+    ):
+        req = Prepare.operate_privilege_v2_request(
+            role_name,
+            privilege,
+            milvus_types.OperatePrivilegeType.Grant,
+            db_name,
+            collection_name,
+        )
+        resp = self._stub.OperatePrivilegeV2(req, wait_for_ready=True, timeout=timeout)
+        check_status(resp)
+
+    @retry_on_rpc_failure()
+    def revoke_privilege_v2(
+        self,
+        role_name: str,
+        privilege: str,
+        collection_name: str,
+        db_name: Optional[str] = None,
+        timeout: Optional[float] = None,
+        **kwargs,
+    ):
+        req = Prepare.operate_privilege_v2_request(
+            role_name,
+            privilege,
+            milvus_types.OperatePrivilegeType.Revoke,
+            db_name,
+            collection_name,
+        )
+        resp = self._stub.OperatePrivilegeV2(req, wait_for_ready=True, timeout=timeout)
+        check_status(resp)
+
+    @retry_on_rpc_failure()
     def select_grant_for_one_role(
         self, role_name: str, db_name: str, timeout: Optional[float] = None, **kwargs
     ):
@@ -2042,7 +2081,7 @@ class GrpcHandler:
         req = Prepare.list_privilege_groups_req()
         resp = self._stub.ListPrivilegeGroups(req, wait_for_ready=True, timeout=timeout)
         check_status(resp.status)
-        return resp.privilege_groups
+        return PrivilegeGroupInfo(resp.privilege_groups)
 
     @retry_on_rpc_failure()
     def add_privileges_to_group(

@@ -34,8 +34,7 @@ from .constants import (
     BulkFileType,
 )
 
-logger = logging.getLogger("bulk_buffer")
-logger.setLevel(logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 
 class Buffer:
@@ -93,15 +92,15 @@ class Buffer:
         if DYNAMIC_FIELD_NAME in row and not isinstance(row[DYNAMIC_FIELD_NAME], dict):
             self._throw(f"Dynamic field '{DYNAMIC_FIELD_NAME}' value should be JSON format")
 
-        for k in row:
+        for k, v in row.items():
             if k == DYNAMIC_FIELD_NAME:
-                dynamic_values.update(row[k])
+                dynamic_values.update(v)
                 continue
 
             if k not in self._buffer:
-                dynamic_values[k] = self._raw_obj(row[k])
+                dynamic_values[k] = self._raw_obj(v)
             else:
-                self._buffer[k].append(row[k])
+                self._buffer[k].append(v)
 
         if DYNAMIC_FIELD_NAME in self._buffer:
             self._buffer[DYNAMIC_FIELD_NAME].append(dynamic_values)

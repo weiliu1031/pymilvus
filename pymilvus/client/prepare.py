@@ -12,7 +12,7 @@ from pymilvus.grpc_gen import schema_pb2 as schema_types
 from pymilvus.orm.schema import CollectionSchema
 from pymilvus.orm.types import infer_dtype_by_scalar_data
 
-from . import __version__, blob, entity_helper, ts_utils, utils
+from . import __version__, blob, check, entity_helper, ts_utils, utils
 from .check import check_pass_param, is_legal_collection_properties
 from .constants import (
     DEFAULT_CONSISTENCY_LEVEL,
@@ -394,6 +394,10 @@ class Prepare:
         )
 
     @staticmethod
+    def _function_output_field_names(fields_info: List[Dict]):
+        return [field["name"] for field in fields_info if field.get("is_function_output", False)]
+
+    @staticmethod
     def _num_input_fields(fields_info: List[Dict], is_upsert: bool):
         return len([field for field in fields_info if Prepare._is_input_field(field, is_upsert)])
 
@@ -407,6 +411,7 @@ class Prepare:
         input_fields_info = [
             field for field in fields_info if Prepare._is_input_field(field, is_upsert=False)
         ]
+        function_output_field_names = Prepare._function_output_field_names(fields_info)
         fields_data = {
             field["name"]: schema_types.FieldData(field_name=field["name"], type=field["type"])
             for field in input_fields_info
@@ -426,10 +431,16 @@ class Prepare:
                     msg = f"expected Dict, got '{type(entity).__name__}'"
                     raise TypeError(msg)
                 for k, v in entity.items():
-                    if k not in fields_data and not enable_dynamic:
-                        raise DataNotMatchException(
-                            message=ExceptionsMessage.InsertUnexpectedField % k
-                        )
+                    if k not in fields_data:
+                        if k in function_output_field_names:
+                            raise DataNotMatchException(
+                                message=ExceptionsMessage.InsertUnexpectedFunctionOutputField % k
+                            )
+
+                        if not enable_dynamic:
+                            raise DataNotMatchException(
+                                message=ExceptionsMessage.InsertUnexpectedField % k
+                            )
 
                     if k in fields_data:
                         field_info, field_data = field_info_map[k], fields_data[k]
@@ -482,6 +493,7 @@ class Prepare:
         input_fields_info = [
             field for field in fields_info if Prepare._is_input_field(field, is_upsert=True)
         ]
+        function_output_field_names = Prepare._function_output_field_names(fields_info)
         fields_data = {
             field["name"]: schema_types.FieldData(field_name=field["name"], type=field["type"])
             for field in input_fields_info
@@ -501,10 +513,16 @@ class Prepare:
                     msg = f"expected Dict, got '{type(entity).__name__}'"
                     raise TypeError(msg)
                 for k, v in entity.items():
-                    if k not in fields_data and not enable_dynamic:
-                        raise DataNotMatchException(
-                            message=ExceptionsMessage.InsertUnexpectedField % k
-                        )
+                    if k not in fields_data:
+                        if k in function_output_field_names:
+                            raise DataNotMatchException(
+                                message=ExceptionsMessage.InsertUnexpectedFunctionOutputField % k
+                            )
+
+                        if not enable_dynamic:
+                            raise DataNotMatchException(
+                                message=ExceptionsMessage.InsertUnexpectedField % k
+                            )
 
                     if k in fields_data:
                         field_info, field_data = field_info_map[k], fields_data[k]
@@ -734,29 +752,21 @@ class Prepare:
     def delete_request(
         cls,
         collection_name: str,
-        partition_name: str,
-        expr: str,
-        consistency_level: Optional[Union[int, str]],
+        filter: str,
+        partition_name: Optional[str] = None,
+        consistency_level: Optional[Union[int, str]] = None,
         **kwargs,
     ):
-        def check_str(instr: str, prefix: str):
-            if instr is None:
-                raise ParamError(message=f"{prefix} cannot be None")
-            if not isinstance(instr, str):
-                raise ParamError(message=f"{prefix} value {instr} is illegal")
-            if len(instr) == 0:
-                raise ParamError(message=f"{prefix} cannot be empty")
-
-        check_str(collection_name, "collection_name")
-        if partition_name is not None and partition_name != "":
-            check_str(partition_name, "partition_name")
-        param_name = kwargs.get("param_name", "expr")
-        check_str(expr, param_name)
+        check.validate_strs(
+            collection_name=collection_name,
+            filter=filter,
+        )
+        check.validate_nullable_strs(partition_name=partition_name)
 
         return milvus_types.DeleteRequest(
             collection_name=collection_name,
             partition_name=partition_name,
-            expr=expr,
+            expr=filter,
             consistency_level=get_consistency_level(consistency_level),
             expr_template_values=cls.prepare_expression_template(kwargs.get("expr_params", {})),
         )
@@ -1460,6 +1470,33 @@ class Prepare:
                 ),
             ),
             type=operate_privilege_type,
+        )
+
+    @classmethod
+    def operate_privilege_v2_request(
+        cls,
+        role_name: str,
+        privilege: str,
+        operate_privilege_type: Any,
+        db_name: str,
+        collection_name: str,
+    ):
+        check_pass_param(
+            role_name=role_name,
+            privilege=privilege,
+            collection_name=collection_name,
+            operate_privilege_type=operate_privilege_type,
+        )
+        if db_name:
+            check_pass_param(db_name=db_name)
+        return milvus_types.OperatePrivilegeV2Request(
+            role=milvus_types.RoleEntity(name=role_name),
+            grantor=milvus_types.GrantorEntity(
+                privilege=milvus_types.PrivilegeEntity(name=privilege)
+            ),
+            type=operate_privilege_type,
+            db_name=db_name,
+            collection_name=collection_name,
         )
 
     @classmethod

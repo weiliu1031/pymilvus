@@ -27,7 +27,6 @@ from pymilvus.orm.types import DataType
 from .index import IndexParams
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 
 class MilvusClient:
@@ -400,8 +399,8 @@ class MilvusClient:
                 limit=limit,
                 output_fields=output_fields,
                 partition_names=partition_names,
-                timeout=timeout,
                 expr_params=kwargs.pop("filter_params", {}),
+                timeout=timeout,
                 **kwargs,
             )
         except Exception as ex:
@@ -543,10 +542,10 @@ class MilvusClient:
         collection_name: str,
         ids: Optional[Union[list, str, int]] = None,
         timeout: Optional[float] = None,
-        filter: Optional[str] = "",
-        partition_name: Optional[str] = "",
+        filter: Optional[str] = None,
+        partition_name: Optional[str] = None,
         **kwargs,
-    ) -> Dict:
+    ) -> Dict[str, int]:
         """Delete entries in the collection by their pk or by filter.
 
         Starting from version 2.3.2, Milvus no longer includes the primary keys in the result
@@ -558,14 +557,17 @@ class MilvusClient:
         Milvus(previous 2.3.2) is not empty, the list of primary keys is still returned.
 
         Args:
-            ids (list, str, int): The pk's to delete. Depending on pk_field type it can be int
-                or str or alist of either. Default to None.
-            filter(str, optional): A filter to use for the deletion. Defaults to empty.
+            ids (list, str, int, optional): The pk's to delete.
+                Depending on pk_field type it can be int or str or a list of either.
+                Default to None.
+            filter(str, optional): A filter to use for the deletion. Defaults to none.
             timeout (int, optional): Timeout to use, overides the client level assigned at init.
                 Defaults to None.
 
+            Note: You need to passin either ids or filter, and they cannot be used at the same time.
+
         Returns:
-            Dict: Number of rows that were deleted.
+            Dict: with key 'deleted_count' and value number of rows that were deleted.
         """
         pks = kwargs.get("pks", [])
         if isinstance(pks, (int, str)):
@@ -589,35 +591,32 @@ class MilvusClient:
                 msg = f"wrong type of argument ids, expect list, int or str, got '{type(ids).__name__}'"
                 raise TypeError(msg)
 
+        # validate ambiguous delete filter param before describe collection rpc
+        if filter and len(pks) > 0:
+            raise ParamError(message=ExceptionsMessage.AmbiguousDeleteFilterParam)
+
         expr = ""
         conn = self._get_connection()
-        if pks:
+        if len(pks) > 0:
             try:
                 schema_dict = conn.describe_collection(collection_name, timeout=timeout, **kwargs)
             except Exception as ex:
                 logger.error("Failed to describe collection: %s", collection_name)
                 raise ex from ex
-
             expr = self._pack_pks_expr(schema_dict, pks)
-
-        if filter:
-            if expr:
-                raise ParamError(message=ExceptionsMessage.AmbiguousDeleteFilterParam)
-
+        else:
             if not isinstance(filter, str):
                 raise DataTypeNotMatchException(message=ExceptionsMessage.ExprType % type(filter))
-
             expr = filter
 
         ret_pks = []
         try:
             res = conn.delete(
-                collection_name,
-                expr,
-                partition_name,
-                timeout=timeout,
-                param_name="filter or ids",
+                collection_name=collection_name,
+                expression=expr,
+                partition_name=partition_name,
                 expr_params=kwargs.pop("filter_params", {}),
+                timeout=timeout,
                 **kwargs,
             )
             if res.primary_keys:
@@ -626,6 +625,7 @@ class MilvusClient:
             logger.error("Failed to delete primary keys in collection: %s", collection_name)
             raise ex from ex
 
+        # compatible with deletions that returns primary keys
         if ret_pks:
             return ret_pks
 
@@ -1003,6 +1003,44 @@ class MilvusClient:
             role_name, object_type, object_name, privilege, db_name, timeout=timeout, **kwargs
         )
 
+    def grant_privilege_v2(
+        self,
+        role_name: str,
+        privilege: str,
+        collection_name: str,
+        db_name: Optional[str] = None,
+        timeout: Optional[float] = None,
+        **kwargs,
+    ):
+        conn = self._get_connection()
+        conn.grant_privilege_v2(
+            role_name,
+            privilege,
+            collection_name,
+            db_name=db_name,
+            timeout=timeout,
+            **kwargs,
+        )
+
+    def revoke_privilege_v2(
+        self,
+        role_name: str,
+        privilege: str,
+        collection_name: str,
+        db_name: Optional[str] = None,
+        timeout: Optional[float] = None,
+        **kwargs,
+    ):
+        conn = self._get_connection()
+        conn.revoke_privilege_v2(
+            role_name,
+            privilege,
+            collection_name,
+            db_name=db_name,
+            timeout=timeout,
+            **kwargs,
+        )
+
     def create_alias(
         self, collection_name: str, alias: str, timeout: Optional[float] = None, **kwargs
     ):
@@ -1181,7 +1219,7 @@ class MilvusClient:
         self,
         timeout: Optional[float] = None,
         **kwargs,
-    ) -> Dict[str, List[str]]:
+    ) -> List[Dict[str, str]]:
         """List all privilege groups.
 
         Args:
@@ -1190,16 +1228,20 @@ class MilvusClient:
                 or error occur.
 
         Returns:
-            Dict[str, List[str]]: A dictionary of privilege groups and their privileges.
+            List[Dict[str, str]]: A list of privilege groups.
 
         Raises:
             MilvusException: If anything goes wrong.
         """
         conn = self._get_connection()
-        pgs = conn.list_privilege_groups(timeout=timeout, **kwargs)
-        ret = {}
-        for pg in pgs:
-            ret[pg.group_name] = [p.name for p in pg.privileges]
+        try:
+            res = conn.list_privilege_groups(timeout=timeout, **kwargs)
+        except Exception as ex:
+            logger.exception("Failed to list privilege groups.")
+            raise ex from ex
+        ret = []
+        for g in res.groups:
+            ret.append({"privilge_group": g.privilege_group, "privileges": g.privileges})
         return ret
 
     def add_privileges_to_group(
@@ -1214,6 +1256,7 @@ class MilvusClient:
         Args:
             group_name (``str``): The name of the privilege group.
             privileges (``List[str]``): A list of privileges to be added to the group.
+                Privilges should be the same type in a group otherwise it will raise an exception.
             timeout (``float``, optional): An optional duration of time in seconds to allow
                 for the RPC. When timeout is set to None, client waits until server response
                 or error occur.
